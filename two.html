@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Impact Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;600;700&family=Roboto+Mono&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="two.css"> </head>
+<body>
+
+    <div id="designer-view" class="view-container">
+        <div class="card">
+            <h1>STEP 1: TARGET DESIGN</h1>
+            <p class="subtitle">Design the target planet or use the default.</p>
+            
+            <form id="planetForm">
+                <div class="field"><label>Colour:</label><input type="color" id="p_color" value="#4682b4"></div>
+                <div class="field"><label>Diameter (km):</label><input type="number" id="p_diameter" value="12742" min="1000" max="50000"></div>
+                <div class="field"><label>Atmosphere Density:</label><input type="number" id="p_atmosphere" value="10" min="0" max="100"></div>
+                <div class="field"><label>Type:</label>
+                    <select id="p_type">
+                        <option value="rocky">Rocky</option>
+                        <option value="gaseous">Gaseous</option>
+                        <option value="icy">Icy</option>
+                        <option value="lava">Lava</option>
+                    </select>
+                </div>
+                <button type="button" id="confirm-planet-btn">Confirm Planet & Proceed</button>
+            </form>
+            <button id="default-earth-btn" class="secondary-btn">Use Default Earth & Proceed</button>
+        </div>
+    </div>
+
+    <div id="impact-setup-view" class="view-container" style="display: none;">
+        <div class="card">
+            <h1>STEP 2: IMPACTOR PARAMETERS</h1>
+            <p class="subtitle">Target: <span id="target-name"></span> // 05 OCT 2025</p>
+            <div class="field">
+                <label for="size"><span>Asteroid Diameter</span><span id="size-label">500 m</span></label>
+                <input id="size" type="range" min="50" max="5000" value="500">
+            </div>
+            <div class="field">
+                <label for="speed"><span>Impact Velocity</span><span id="speed-label">25 km/s</span></label>
+                <input id="speed" type="range" min="15" max="70" value="25">
+            </div>
+            <div class="field">
+                <label for="angle"><span>Entry Angle</span><span id="angle-label">45°</span></label>
+                <input id="angle" type="range" min="20" max="90" value="45">
+            </div>
+            <button id="start-button">INITIATE SIMULATION</button>
+            <p class="hint">Use your mouse to control the camera: <br> <b>Left-Drag:</b> Orbit | <b>Scroll:</b> Zoom | <b>Right-Drag:</b> Pan</p>
+        </div>
+    </div>
+
+    <div id="simulation-container"></div>
+    <div id="data-overlay"><p>Altitude: <span id="altitude-val">--</span> km</p><p>Velocity: <span id="velocity-val">--</span> km/s</p></div>
+    <div id="impact-report"></div>
+    <div id="restart-button" title="Restart Simulation">↺</div>
+
+    <script src="two.js" defer></script>
+</body>
+</html>
