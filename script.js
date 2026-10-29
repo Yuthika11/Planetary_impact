@@ -1,340 +1,222 @@
-// --- Global 3D and State Variables ---
-let scene, camera, renderer, controls, meteor, plasmaSheath;
-let planet, atmosphere, clouds; // Unified planet objects
-let particles = { trail: [] };
-let cameraShake = { active: false, intensity: 0, decay: 0.95 };
-let simState = { running: false, stage: 'idle', frameCount: 0, progress: 0 };
-let animationId;
-let audio = { noise: null, impact: null };
-let craterDecals = { lava: null, scorch: null };
-let trajectory;
+'use strict';
 
-// --- Planet and Impactor Configuration ---
-let planetConfig = {};
-let impactorConfig = {};
-
-// --- Texture URLs ---
-const TEXTURES = {
-    EARTH_MAP: 'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg',
-    EARTH_BUMP: 'https://threejs.org/examples/textures/planets/earth_topology_512.jpg',
-    EARTH_SPECULAR: 'https://threejs.org/examples/textures/planets/earth_specular_2048.jpg',
-    CLOUDS: 'https://threejs.org/examples/textures/planets/earth_clouds_1024.png',
-    LAVA: "https://threejs.org/examples/textures/lava/lavatile.jpg",
-    ICY_BASE_MAP: "https://threejs.org/examples/textures/planets/earth_ice_4096.jpg",
-    SPACE_PX: 'https://threejsfundamentals.org/threejs/resources/images/cubemaps/space/px.jpg',
-    SPACE_NX: 'https://threejsfundamentals.org/threejs/resources/images/cubemaps/space/nx.jpg',
-    SPACE_PY: 'https://threejsfundamentals.org/threejs/resources/images/cubemaps/space/py.jpg',
-    SPACE_NY: 'https://threejsfundamentals.org/threejs/resources/images/cubemaps/space/ny.jpg',
-    SPACE_PZ: 'https://threejsfundamentals.org/threejs/resources/images/cubemaps/space/pz.jpg',
-    SPACE_NZ: 'https://threejsfundamentals.org/threejs/resources/images/cubemaps/space/nz.jpg'
-};
-
-// --- UI Element References ---
+// Planetary impact: educational visualisation, not a hydrodynamic impact solver.
+const $ = id => document.getElementById(id);
 const ui = {
-    designerView: document.getElementById('designer-view'),
-    impactSetupView: document.getElementById('impact-setup-view'),
-    simulationContainer: document.getElementById('simulation-container'),
-    
-    // Designer inputs
-    pColor: document.getElementById('p_color'),
-    pDiameter: document.getElementById('p_diameter'),
-    pAtmosphere: document.getElementById('p_atmosphere'),
-    pType: document.getElementById('p_type'),
-    confirmPlanetBtn: document.getElementById('confirm-planet-btn'),
-    defaultEarthBtn: document.getElementById('default-earth-btn'),
-    
-    // Impactor inputs
-    startBtn: document.getElementById('start-button'),
-    sizeSlider: document.getElementById('size'),
-    speedSlider: document.getElementById('speed'),
-    angleSlider: document.getElementById('angle'),
-    targetName: document.getElementById('target-name'),
-
-    // Simulation overlays
-    restartBtn: document.getElementById('restart-button'),
-    dataOverlay: document.getElementById('data-overlay'),
-    impactReport: document.getElementById('impact-report'),
-    altitudeVal: document.getElementById('altitude-val'),
-    velocityVal: document.getElementById('velocity-val')
+  designer: $('designer-view'), setup: $('impact-setup-view'), container: $('simulation-container'),
+  pColor: $('p_color'), pDiameter: $('p_diameter'), pAtmosphere: $('p_atmosphere'), pType: $('p_type'),
+  confirm: $('confirm-planet-btn'), earth: $('default-earth-btn'), start: $('start-button'),
+  size: $('size'), speed: $('speed'), angle: $('angle'), target: $('target-name'),
+  overlay: $('data-overlay'), report: $('impact-report'), restart: $('restart-button'),
+  altitude: $('altitude-val'), velocity: $('velocity-val')
 };
+const R = 10;
+const EARTH_DIAMETER_KM = 12742;
+const rhoImpactor = 3000; // kg/m^3 (illustrative stony asteroid)
+const constants = { G: 6.67430e-11, J_PER_MT: 4.184e15 };
+const clamp = (x,a,b) => Math.min(b,Math.max(a,x));
+const config = { planet: { type:'earth', color:'#4682b4', diameter:EARTH_DIAMETER_KM, atmosphere:10 },
+                 impactor: { size:500, speed:25, angle:45 } };
+let scene, camera, renderer, controls, planet, clouds, atmosphere, meteor, halo, shockwave, flash;
+let trajectory, impactNormal, stars;
+let started = false, state = 'idle', progress = 0, elapsed = 0, impactAge = 0, lastFrame = 0;
+const clock = new THREE.Clock();
+let particles = [];
 
-// --- Initial Setup and Scene Initialization ---
+function show(view) {
+  ui.designer.style.display = view === 'designer' ? 'flex' : 'none';
+  ui.setup.style.display = view === 'setup' ? 'flex' : 'none';
+  ui.overlay.style.display = view === 'simulation' ? 'block' : 'none';
+  ui.restart.style.display = view === 'simulation' ? 'flex' : 'none';
+}
+function disposeObject(obj) {
+  if (!obj) return;
+  obj.parent?.remove(obj);
+  obj.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+  });
+}
 function init() {
-    scene = new THREE.Scene();
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    ui.simulationContainer.appendChild(renderer.domElement);
-
-    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(-30, 20, 50);
-
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-
-    const sunLight = new THREE.DirectionalLight(0xfffde8, 1.2);
-    sunLight.position.set(50, 20, 30);
-    scene.add(sunLight);
-    scene.add(new THREE.AmbientLight(0x404040, 0.5));
-
-    const cubeLoader = new THREE.CubeTextureLoader();
-    scene.background = cubeLoader.load([TEXTURES.SPACE_PX, TEXTURES.SPACE_NX, TEXTURES.SPACE_PY, TEXTURES.SPACE_NY, TEXTURES.SPACE_PZ, TEXTURES.SPACE_NZ]);
-    
-    window.addEventListener('resize', onWindowResize);
-    animate();
+  if (typeof THREE === 'undefined') { alert('Three.js failed to load. Check your connection.'); return; }
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x020611);
+  renderer = new THREE.WebGLRenderer({ antialias:true, alpha:false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  ui.container.appendChild(renderer.domElement);
+  camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, .1, 1500);
+  camera.position.set(0,18,42);
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.minDistance = 14;
+  controls.maxDistance = 150;
+  scene.add(new THREE.AmbientLight(0x657baf, 0.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.55);
+  sun.position.set(-35, 20, 40);
+  scene.add(sun);
+  createStars();
+  window.addEventListener('resize', resize);
+  show('designer');
+  requestAnimationFrame(tick);
 }
-
-// --- Planet Creation Logic (Adapted from Designer) ---
-function createPlanet(config) {
-    const radius = 10; // Use a fixed radius for the simulation scene
-    const geometry = new THREE.SphereGeometry(radius, 128, 128);
-    const loader = new THREE.TextureLoader();
-    let material;
-    
-    // Default Earth case
-    if (config.type === 'earth') {
-        material = new THREE.MeshPhongMaterial({
-            map: loader.load(TEXTURES.EARTH_MAP),
-            bumpMap: loader.load(TEXTURES.EARTH_BUMP),
-            bumpScale: 0.05,
-            specularMap: loader.load(TEXTURES.EARTH_SPECULAR),
-            specular: new THREE.Color('grey'),
-            shininess: 8
-        });
-        planet = new THREE.Mesh(geometry, material);
-        
-        // Atmosphere
-        const atmoGeo = new THREE.SphereGeometry(radius + 0.25, 128, 128);
-        const atmoMat = new THREE.ShaderMaterial({ vertexShader: `varying vec3 vNormal; void main() { vNormal = normalize( normalMatrix * normal ); gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 ); }`, fragmentShader: `varying vec3 vNormal; void main() { float intensity = pow( 0.5 - dot( vNormal, vec3( 0, 0, 1.0 ) ), 4.0 ); gl_FragColor = vec4( 0.5, 0.7, 1.0, 1.0 ) * intensity; }`, blending: THREE.AdditiveBlending, side: THREE.BackSide, transparent: true });
-        atmosphere = new THREE.Mesh(atmoGeo, atmoMat);
-        scene.add(atmosphere);
-
-        // Clouds
-        const cloudGeo = new THREE.SphereGeometry(radius + 0.05, 128, 128);
-        const cloudMat = new THREE.MeshPhongMaterial({ map: loader.load(TEXTURES.CLOUDS), transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending });
-        clouds = new THREE.Mesh(cloudGeo, cloudMat);
-        scene.add(clouds);
-
-    } else { // Custom designed planet
-        material = new THREE.MeshStandardMaterial({ color: config.color, roughness: 0.7, metalness: 0.1 });
-        
-        switch (config.type) {
-            case "rocky":
-                material.map = loader.load(TEXTURES.EARTH_MAP);
-                material.color.multiply(new THREE.Color(0x444444));
-                break;
-            case "gaseous":
-                const gasTexture = loader.load(TEXTURES.LAVA);
-                gasTexture.wrapS = gasTexture.wrapT = THREE.RepeatWrapping;
-                gasTexture.repeat.set(4, 4);
-                material.map = gasTexture;
-                material.emissive = new THREE.Color(config.color).multiplyScalar(0.2);
-                break;
-            case "icy":
-                material.map = loader.load(TEXTURES.ICY_BASE_MAP);
-                material.roughness = 0.1;
-                material.metalness = 0.8;
-                material.emissive = new THREE.Color(0xaaeeff).multiplyScalar(0.15);
-                break;
-            case "lava":
-                const lavaTexture = loader.load(TEXTURES.LAVA);
-                lavaTexture.wrapS = lavaTexture.wrapT = THREE.RepeatWrapping;
-                material.map = lavaTexture;
-                material.emissiveMap = lavaTexture;
-                material.emissive = new THREE.Color(0xff4500);
-                material.emissiveIntensity = 0.8;
-                break;
-        }
-        planet = new THREE.Mesh(geometry, material);
-
-        // Custom atmosphere
-        if (config.atmosphere > 0) {
-            const atmoRadius = radius * (1.0 + (config.atmosphere / 200));
-            const atmoGeo = new THREE.SphereGeometry(atmoRadius, 64, 64);
-            const atmoMat = new THREE.MeshBasicMaterial({ color: 0x00aaff, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, side: THREE.BackSide });
-            atmosphere = new THREE.Mesh(atmoGeo, atmoMat);
-            scene.add(atmosphere);
-        }
+function createStars() {
+  const n=1800, data = new Float32Array(n*3);
+  for(let i=0; i<n; i++) {
+    const theta=Math.acos(2*Math.random()-1), phi=2*Math.PI*Math.random(), r=280+Math.random()*450;
+    data[i*3]=r*Math.sin(theta)*Math.cos(phi);
+    data[i*3+1]=r*Math.sin(theta)*Math.sin(phi);
+    data[i*3+2]=r*Math.cos(theta);
+  }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(data,3));
+  stars=new THREE.Points(g,new THREE.PointsMaterial({color:0xb7d6ff,size:0.85,sizeAttenuation:false}));
+  scene.add(stars);
+}
+function createPlanet() {
+  disposeObject(planet); disposeObject(clouds); disposeObject(atmosphere);
+  const p=config.planet;
+  const colors={rocky:p.color,gaseous:'#c79b70',icy:'#bedffd',lava:'#d44a18',earth:'#4b8bcb'};
+  const color=colors[p.type] || p.color;
+  const mat = new THREE.MeshStandardMaterial({color,roughness:p.type==='icy'?.62:.91,metalness:0.0});
+  const sphere=new THREE.SphereGeometry(R,96,64);
+  planet=new THREE.Mesh(sphere,mat); scene.add(planet);
+  // Earth map is an optional enhancement: the simulation still works if it cannot load.
+  if(p.type==='earth') {
+    new THREE.TextureLoader().load('https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg', tex=>{
+      if (planet && planet.material===mat) { mat.map=tex; mat.color.set('#ffffff'); mat.needsUpdate=true; }
+      else tex.dispose();
+    }, undefined, ()=>{});
+  }
+  if(p.type==='earth' || p.atmosphere>0) {
+    const a=clamp(p.atmosphere,0,100);
+    atmosphere=new THREE.Mesh(new THREE.SphereGeometry(R+0.20+0.015*a,64,48),
+      new THREE.MeshBasicMaterial({color:p.type==='earth'?0x4d9fff:0x82cfff,transparent:true,opacity:.035 + a*.0011,side:THREE.BackSide,depthWrite:false}));
+    scene.add(atmosphere);
+  }
+  controls.target.set(0,0,0); controls.update();
+}
+function readPlanet() {
+  const diameter=Number(ui.pDiameter.value), atmosphereDensity=Number(ui.pAtmosphere.value);
+  if(!Number.isFinite(diameter) || diameter<1000 || diameter>50000 ||
+     !Number.isFinite(atmosphereDensity) || atmosphereDensity<0 || atmosphereDensity>100) {
+    alert('Enter a planet diameter between 1,000 and 50,000 km and atmosphere value between 0 and 100.'); return false;
+  }
+  config.planet={type:ui.pType.value,color:ui.pColor.value,diameter,atmosphere:atmosphereDensity};
+  return true;
+}
+function readImpactor() {
+  config.impactor = {size:Number(ui.size.value),speed:Number(ui.speed.value),angle:Number(ui.angle.value)};
+}
+function makeTrajectory() {
+  // An incidence angle is measured above the local horizontal. For 90° the path is radial.
+  const angle=THREE.MathUtils.degToRad(config.impactor.angle);
+  impactNormal=new THREE.Vector3(0.88,0.08,0.47).normalize();
+  const tangent=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),impactNormal).normalize();
+  const inward=impactNormal.clone().multiplyScalar(-Math.sin(angle)).addScaledVector(tangent,Math.cos(angle)).normalize();
+  const hit=impactNormal.clone().multiplyScalar(R);
+  const start=hit.clone().addScaledVector(inward,-34);
+  // Straight-line trajectory through space to the point of contact.
+  trajectory={start,hit,inward};
+  return start;
+}
+function createMeteor() {
+  disposeObject(meteor);
+  const radius=clamp((config.impactor.size/1000)/config.planet.diameter*2*R,0.16,1.3);
+  meteor=new THREE.Group();
+  const core=new THREE.Mesh(new THREE.DodecahedronGeometry(radius,2),
+    new THREE.MeshStandardMaterial({color:0x94887d,roughness:1,flatShading:true}));
+  meteor.add(core);
+  halo=new THREE.Mesh(new THREE.SphereGeometry(radius*1.45,20,12),
+    new THREE.MeshBasicMaterial({color:0xff8b33,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending}));
+  meteor.add(halo);
+  meteor.position.copy(makeTrajectory());
+  scene.add(meteor);
+}
+function resetEffects() {
+  disposeObject(shockwave); disposeObject(flash); shockwave=null;flash=null;
+  particles.forEach(disposeObject);particles=[];
+  ui.report.style.display='none';
+  impactAge=0;
+}
+function start() {
+  if(started && state==='approach') return;
+  readImpactor(); createPlanet(); createMeteor();resetEffects();
+  started=true; state='approach'; progress=0; elapsed=0;
+  camera.position.set(0,18,42); controls.target.set(0,0,0);
+  ui.altitude.textContent='--';ui.velocity.textContent=config.impactor.speed.toFixed(1);
+  show('simulation');
+}
+function estimatedEnergy() {
+  const {size,speed,angle}=config.impactor;
+  const m=rhoImpactor * Math.PI/6*Math.pow(size,3);
+  const joules=0.5*m*Math.pow(speed*1000,2);
+  // Illustrative power-law scaling; not site calibrated or physically validated.
+  const craterKm = 1.3*Math.pow(joules/constants.J_PER_MT,0.29)*Math.pow(Math.sin(angle*Math.PI/180),1/3);
+  return {joules,mt:joules/constants.J_PER_MT,craterKm};
+}
+function impact() {
+  state='impact'; impactAge=0;
+  disposeObject(meteor);meteor=null;
+  const pos=impactNormal.clone().multiplyScalar(R+0.03);
+  shockwave=new THREE.Mesh(new THREE.RingGeometry(0.05,0.20,72),
+    new THREE.MeshBasicMaterial({color:0xffb665,transparent:true,opacity:1,side:THREE.DoubleSide,depthWrite:false}));
+  shockwave.position.copy(pos); shockwave.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),impactNormal);
+  scene.add(shockwave);
+  flash=new THREE.PointLight(0xffa04a,0,50); flash.position.copy(pos);scene.add(flash);
+  for(let i=0;i<32;i++) {
+    const bead=new THREE.Mesh(new THREE.IcosahedronGeometry(.045+Math.random()*.085,0),
+      new THREE.MeshBasicMaterial({color:i%2?0xffa64b:0xf7dba8,transparent:true,opacity:1}));
+    bead.position.copy(pos);
+    const dir=new THREE.Vector3(Math.random()-.5,Math.random()-.5,Math.random()-.5).addScaledVector(impactNormal,1).normalize();
+    bead.userData.velocity=dir.multiplyScalar(3+Math.random()*7);
+    scene.add(bead);particles.push(bead);
+  }
+  const e=estimatedEnergy();
+  ui.report.innerHTML=`<h2>Impact Analysis</h2>
+    <p>Energy <span>${e.joules.toExponential(2)} J</span></p>
+    <p>Equivalent <span>${e.mt.toFixed(1)} Mt TNT</span></p>
+    <p>Illustrative crater <span>${e.craterKm.toFixed(2)} km</span></p>
+    <small>Idealized solid-body collision. No fragmentation, ablation, detailed atmosphere or validated crater model.</small>`;
+  ui.report.style.display='block';
+  ui.altitude.textContent='0';
+}
+function tick() {
+  requestAnimationFrame(tick);
+  if(!renderer) return;
+  const dt=Math.min(clock.getDelta(),0.05);
+  if(state==='approach' && meteor) {
+    elapsed+=dt;
+    // The input velocity controls playback speed. Visible distance is not a real-world timescale.
+    const duration=clamp(9*25/config.impactor.speed,3.1,16);
+    progress=clamp(elapsed/duration,0,1);
+    const eased=progress*progress*(3-2*progress);
+    meteor.position.copy(trajectory.start).lerp(trajectory.hit,eased);
+    meteor.rotation.x+=dt*.95;meteor.rotation.y+=dt*.6;
+    const kmPerUnit=config.planet.diameter/(2*R);
+    const altitude=Math.max(0,meteor.position.length()-R)*kmPerUnit;
+    ui.altitude.textContent=altitude.toFixed(0);
+    if(halo) {
+      const atmoKm=clamp(config.planet.atmosphere,0,100)*3.0+35;
+      const glow=config.planet.type==='earth' || config.planet.atmosphere>0 ? clamp(1-altitude/atmoKm,0,1) : 0;
+      halo.material.opacity=.55*glow;
     }
-    
-    scene.add(planet);
-    controls.target.copy(planet.position);
+    if(progress>=1) impact();
+  }
+  if(state==='impact') {
+    impactAge+=dt;
+    if(shockwave) { const k=1+impactAge*22;shockwave.scale.set(k,k,k);shockwave.material.opacity=Math.max(0,1-impactAge/1.8); }
+    if(flash) flash.intensity=30*Math.exp(-impactAge*4);
+    particles.forEach(p=>{p.position.addScaledVector(p.userData.velocity,dt);p.userData.velocity.multiplyScalar(Math.exp(-1.5*dt));p.material.opacity=Math.max(0,1-impactAge/2.5);});
+    if(impactAge>3.2){disposeObject(shockwave);shockwave=null; if(flash){scene.remove(flash);flash.dispose();flash=null;}particles.forEach(disposeObject);particles=[];state='complete';}
+  }
+  if(planet) planet.rotation.y+=dt*0.015;
+  controls.update();renderer.render(scene,camera);
 }
-
-
-// --- Main Simulation Logic (Adapted from Impactor) ---
-function startFinalSimulation() {
-    // --- Step 1: Create the target planet based on config ---
-    createPlanet(planetConfig);
-
-    // --- Step 2: Set up the impactor and trajectory ---
-    const impactPoint = new THREE.Vector3(10, 0, 0); // Simplified impact point
-    const entryAngle = THREE.MathUtils.degToRad(impactorConfig.angle);
-    const startDistance = 50;
-    
-    const normal = impactPoint.clone().normalize();
-    const tangent = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0,1,0)).normalize();
-    const entryDirection = tangent.clone().applyAxisAngle(normal, Math.PI * 2 * Math.random()).multiplyScalar(Math.cos(entryAngle)).add(normal.clone().multiplyScalar(-Math.sin(entryAngle)));
-    const startPoint = impactPoint.clone().add(entryDirection.clone().multiplyScalar(-startDistance));
-    const controlPoint = new THREE.Vector3().addVectors(startPoint, impactPoint).multiplyScalar(0.5);
-    controlPoint.add(controlPoint.clone().normalize().multiplyScalar(-15));
-    trajectory = new THREE.QuadraticBezierCurve3(startPoint, controlPoint, impactPoint);
-
-    const meteorGeo = new THREE.DodecahedronGeometry(1, 2);
-    // (Meteor mesh roughening logic)
-    const meteorMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.8, metalness: 0.2 });
-    meteor = new THREE.Mesh(meteorGeo, meteorMat);
-    const meteorSize = impactorConfig.size / 10000;
-    meteor.scale.set(meteorSize, meteorSize, meteorSize);
-    scene.add(meteor);
-
-    const plasmaGeo = new THREE.SphereGeometry(1.2, 16, 16);
-    const plasmaMat = new THREE.MeshBasicMaterial({ color: 0xffa500, transparent: true, opacity: 0, blending: THREE.AdditiveBlending });
-    plasmaSheath = new THREE.Mesh(plasmaGeo, plasmaMat);
-    meteor.add(plasmaSheath);
-
-    // --- Step 3: Initialize audio and start simulation state ---
-    simState.running = true;
-    simState.stage = 'approach';
-
-    Tone.start();
-    audio.noise = new Tone.Noise("brown").toDestination();
-    audio.noise.volume.value = -60;
-    audio.impact = new Tone.MembraneSynth({ pitchDecay: 0.08, octaves: 10, oscillator: { type: "sine" }, envelope: { attack: 0.001, decay: 0.8, sustain: 0.01, release: 2 } }).toDestination();
-}
-
-
-// --- Animation Loop ---
-function animate() {
-    animationId = requestAnimationFrame(animate);
-    simState.frameCount++;
-
-    controls.update();
-    
-    // Rotate planet and clouds if they exist
-    if (planet) planet.rotation.y += 0.0005;
-    if (clouds) clouds.rotation.y += 0.0007;
-    if (atmosphere) atmosphere.rotation.y += 0.0005;
-
-    // Meteor movement and effects logic...
-    if (simState.running && simState.stage !== 'impact') {
-        const speed = impactorConfig.speed / 4000;
-        simState.progress = Math.min(1, simState.progress + speed);
-        const newPos = trajectory.getPoint(simState.progress);
-        meteor.position.copy(newPos);
-        const tangent = trajectory.getTangent(simState.progress);
-        if(tangent.length() > 0) meteor.lookAt(newPos.clone().add(tangent));
-        
-        const distance = meteor.position.distanceTo(planet.position);
-        const altitude = Math.max(0, (distance - 10) * 637.1); // Assuming 10 units = planet radius
-        ui.altitudeVal.textContent = altitude.toFixed(0);
-        ui.velocityVal.textContent = impactorConfig.speed;
-
-        if (distance < 10.3 && simState.stage === 'approach') {
-            simState.stage = 'entry';
-            audio.noise.start();
-            audio.noise.volume.rampTo(-20, 1);
-        }
-
-        if (simState.stage === 'entry') {
-            plasmaSheath.material.opacity = Math.min(0.9, plasmaSheath.material.opacity + 0.02);
-            plasmaSheath.scale.multiplyScalar(1.03);
-        }
-
-        if (simState.progress >= 1) { onImpact(); }
-    }
-    
-    // Camera shake logic...
-     if (cameraShake.active && !controls.autoRotate) {
-         const shake = new THREE.Vector3((Math.random() - 0.5) * cameraShake.intensity, (Math.random() - 0.5) * cameraShake.intensity, (Math.random() - 0.5) * cameraShake.intensity);
-         camera.position.add(shake);
-         cameraShake.intensity *= cameraShake.decay;
-         if (cameraShake.intensity < 0.01) cameraShake.active = false;
-    }
-    
-    renderer.render(scene, camera);
-}
-
-
-// --- Impact Event and Analysis ---
-function onImpact() {
-    simState.stage = 'impact';
-    
-    // (Calculation and UI update logic from impactor script)
-    const mass = 1500 * (4/3) * Math.PI * Math.pow(impactorConfig.size / 2, 3);
-    const velocity = impactorConfig.speed * 1000;
-    const kineticEnergy = 0.5 * mass * Math.pow(velocity, 2);
-    const megatons = kineticEnergy / 4.184e15;
-    const craterDiameterKm = (25 * Math.pow(megatons, 1/3.4)) / 1000;
-
-    ui.impactReport.innerHTML = `<h2>Impact Analysis</h2><p>Impact Energy (J): <span>${kineticEnergy.toExponential(2)}</span></p><p>Impact Energy (MT): <span>${megatons.toFixed(2)}</span></p><p>Est. Crater Diameter: <span>${craterDiameterKm.toFixed(2)} km</span></p>`;
-    ui.impactReport.style.display = 'block';
-    
-    audio.noise.stop();
-    audio.impact.triggerAttackRelease("C1", "2n");
-    
-    if(meteor && meteor.parent) scene.remove(meteor);
-
-    cameraShake.active = true;
-    cameraShake.intensity = (Math.log10(kineticEnergy) / 5) * 0.5;
-    
-    setTimeout(() => { ui.restartBtn.style.display = 'flex'; }, 3000);
-}
-
-
-// --- Event Listeners for UI Flow ---
-function transitionView(hideView, showView) {
-    hideView.style.opacity = '0';
-    setTimeout(() => {
-        hideView.style.display = 'none';
-        showView.style.display = 'flex';
-        showView.style.opacity = '1';
-    }, 500);
-}
-
-ui.defaultEarthBtn.addEventListener('click', () => {
-    planetConfig = { type: 'earth' };
-    ui.targetName.textContent = 'Default Earth';
-    transitionView(ui.designerView, ui.impactSetupView);
-});
-
-ui.confirmPlanetBtn.addEventListener('click', () => {
-    planetConfig = {
-        type: ui.pType.value,
-        color: ui.pColor.value,
-        diameter: parseFloat(ui.pDiameter.value),
-        atmosphere: parseFloat(ui.pAtmosphere.value)
-    };
-    ui.targetName.textContent = `Custom ${ui.pType.value.charAt(0).toUpperCase() + ui.pType.value.slice(1)} Planet`;
-    transitionView(ui.designerView, ui.impactSetupView);
-});
-
-ui.startBtn.addEventListener('click', () => {
-    impactorConfig = {
-        size: parseFloat(ui.sizeSlider.value),
-        speed: parseFloat(ui.speedSlider.value),
-        angle: parseFloat(ui.angleSlider.value)
-    };
-    transitionView(ui.impactSetupView, {}); // Hide only
-    setTimeout(() => {
-        ui.dataOverlay.style.display = 'block';
-        startFinalSimulation();
-    }, 500);
-});
-
-// Impactor slider labels
-ui.sizeSlider.addEventListener('input', e => { document.getElementById('size-label').textContent = e.target.value < 1000 ? `${e.target.value} m` : `${(e.target.value/1000).toFixed(1)} km`; });
-ui.speedSlider.addEventListener('input', e => { document.getElementById('speed-label').textContent = `${e.target.value} km/s`; });
-ui.angleSlider.addEventListener('input', e => { document.getElementById('angle-label').textContent = `${e.target.value}°`; });
-
-// General Listeners
-ui.restartBtn.addEventListener('click', () => location.reload());
-function onWindowResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-// --- Initialize the application ---
+function resize(){if(!camera||!renderer)return;camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
+ui.confirm.addEventListener('click',()=>{if(readPlanet()){ui.target.textContent=`Custom ${config.planet.type} planet`;show('setup');}});
+ui.earth.addEventListener('click',()=>{config.planet={type:'earth',color:'#4682b4',diameter:EARTH_DIAMETER_KM,atmosphere:10};ui.target.textContent='Earth';show('setup');});
+ui.start.addEventListener('click',start);
+ui.restart.addEventListener('click',()=>{resetEffects();disposeObject(meteor);meteor=null;disposeObject(planet);planet=null;disposeObject(atmosphere);atmosphere=null;state='idle';started=false;show('setup');});
+[['size','size-label',v=>v<1000?`${v} m`:`${(v/1000).toFixed(1)} km`],['speed','speed-label',v=>`${v} km/s`],['angle','angle-label',v=>`${v}°`]].forEach(([id,label,format])=>ui[id].addEventListener('input',e=>$(label).textContent=format(Number(e.target.value))));
 init();
